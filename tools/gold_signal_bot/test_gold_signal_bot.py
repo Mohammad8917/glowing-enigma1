@@ -62,6 +62,7 @@ class CandleValidationTests(unittest.TestCase):
         bars, now = self.make_bars()
         duplicate = bars[10].copy()
         duplicate["close"] += 5
+        duplicate["high"] += 5
         with self.assertRaisesRegex(RuntimeError, "conflicting duplicate"):
             validate_candles(bars + [duplicate], timeframe_seconds=self.interval, now=now)
 
