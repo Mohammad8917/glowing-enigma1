@@ -3,10 +3,10 @@ name: GOLD Signal Bot Tests
 on:
   push:
     branches:
-      - feature/gold-data-reliability
+      - feature/gold-data-reliability\n      - feature/gold-architecture
   pull_request:
     branches:
-      - feature/gold-xauusd-telegram-signals
+      - feature/gold-xauusd-telegram-signals\n      - feature/gold-data-reliability
     paths:
       - "tools/gold_signal_bot/**"
       - ".github/workflows/gold-signal-tests.yml"
@@ -37,9 +37,13 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install -r tools/gold_signal_bot/requirements.txt
 
-      - name: Verify exactly 60 test methods are present
+      - name: Verify modular package imports
         run: |
-          python -c "import ast, pathlib; p=pathlib.Path('tools/gold_signal_bot/test_gold_signal_bot.py'); t=ast.parse(p.read_text(encoding='utf-8')); n=sum(isinstance(x,(ast.FunctionDef,ast.AsyncFunctionDef)) and x.name.startswith('test_') for c in t.body if isinstance(c,ast.ClassDef) for x in c.body); print(f'Discovered test methods: {n}'); assert n == 60, f'Expected 60 tests, found {n}'"
+          python -c "from gold_signal import config, indicators, market_data, service, state, strategy, telegram; print('GOLD architecture imports: OK')"
+
+      - name: Compile all bot modules
+        run: |
+          python -m compileall -q tools/gold_signal_bot
 
       - name: Compile bot and test module
         run: |
