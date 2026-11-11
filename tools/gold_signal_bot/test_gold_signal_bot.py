@@ -8,8 +8,9 @@ from unittest.mock import Mock, patch
 import requests
 
 from gold_signal_bot import (
-    _get_with_retry, _is_expected_gold_pause, atr, detect_signal, ema, parse_bar_time, process_lock, read_state,
-    rsi, validate_candles, write_state,
+    Config, _get_with_retry, _is_expected_gold_pause, atr, detect_signal, ema,
+    fetch_closed_candles, format_signal, parse_bar_time, process_lock, read_state,
+    rsi, run_once, send_telegram, validate_candles, write_state,
 )
 
 
@@ -183,7 +184,7 @@ class ConfigTests(unittest.TestCase):
                 Config.from_env()
 
     def test_requires_telegram_chat_id(self):
-        with patch.dict("os.environ, {"GOLD_TWELVE_DATA_API_KEY": "k", "GOLD_TELEGRAM_BOT_TOKEN": "t"}, clear=True):
+        with patch.dict("os.environ", {"GOLD_TWELVE_DATA_API_KEY": "k", "GOLD_TELEGRAM_BOT_TOKEN": "t"}, clear=True):
             with self.assertRaisesRegex(ValueError, "GOLD_TELEGRAM_CHAT_ID"):
                 Config.from_env()
 
