@@ -3,9 +3,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import Mock, patch
+
+import requests
 
 from gold_signal_bot import (
-    _is_expected_gold_pause, atr, detect_signal, ema, parse_bar_time, process_lock, read_state,
+    _get_with_retry, _is_expected_gold_pause, atr, detect_signal, ema, parse_bar_time, process_lock, read_state,
     rsi, validate_candles, write_state,
 )
 
@@ -114,6 +117,36 @@ class CandleValidationTests(unittest.TestCase):
         sunday_after_open = datetime(2026, 11, 15, 23, 0, tzinfo=timezone.utc)
         self.assertTrue(_is_expected_gold_pause(friday, sunday_before_open))
         self.assertFalse(_is_expected_gold_pause(friday, sunday_after_open))
+
+
+class RetryTests(unittest.TestCase):
+    def test_retries_network_timeout_then_succeeds(self):
+        session = Mock()
+        response = Mock()
+        response.status_code = 200
+        response.headers = {}
+        session.get.side_effect = [requests.Timeout("temporary"), response]
+        with patch("gold_signal_bot.time.sleep"):
+            result = _get_with_retry(session, "https://example.invalid",
+                                     params={}, timeout=5, attempts=2, base_delay=0.1)
+        self.assertIs(result, response)
+        self.assertEqual(session.get.call_count, 2)
+
+    def test_retries_rate_limit_using_retry_after(self):
+        session = Mock()
+        limited = Mock()
+        limited.status_code = 429
+        limited.headers = {"Retry-After": "0"}
+        success = Mock()
+        success.status_code = 200
+        success.headers = {}
+        session.get.side_effect = [limited, success]
+        with patch("gold_signal_bot.time.sleep") as sleeper:
+            result = _get_with_retry(session, "https://example.invalid",
+                                     params={}, timeout=5, attempts=2, base_delay=0.1)
+        self.assertIs(result, success)
+        self.assertEqual(session.get.call_count, 2)
+        sleeper.assert_called_once_with(0.0)
 
 
 class StateAndLockTests(unittest.TestCase):
