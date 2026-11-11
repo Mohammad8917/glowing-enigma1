@@ -34,13 +34,13 @@ class IndicatorTests(unittest.TestCase):
         self.assertAlmostEqual(result[3], 3.0)
         self.assertAlmostEqual(result[4], 4.0)
 
-    def test_rsi_is_bounded(self):
+    def test_rsi_matches_known_reference_values_and_stays_bounded(self):
         result = rsi([1.0, 2.0, 1.0, 2.0], 2)
         self.assertAlmostEqual(result[2], 50.0)
         self.assertAlmostEqual(result[3], 75.0)
         self.assertTrue(all(0.0 <= value <= 100.0 for value in result if value is not None))
 
-    def test_atr_is_positive(self):
+    def test_atr_matches_known_reference_value(self):
         bars = [
             {"open": 10.0, "high": 12.0, "low": 9.0, "close": 10.0},
             {"open": 10.0, "high": 13.0, "low": 10.0, "close": 12.0},
@@ -200,10 +200,6 @@ class StateAndLockTests(unittest.TestCase):
                 self.assertTrue(parent_connection.poll(3), "Child process returned no lock result")
                 self.assertEqual(parent_connection.recv(), "blocked")
             parent_connection.close()
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class ConfigTests(unittest.TestCase):
@@ -473,17 +469,75 @@ class SignalGenerationTests(unittest.TestCase):
         return bars
 
     def test_detects_buy_setup(self):
-        result = detect_signal(self.make_bars("BUY"))
+        bars = self.make_bars("BUY")
+        result = detect_signal(bars)
         self.assertIsNotNone(result)
+        self.assertEqual(
+            set(result),
+            {"symbol", "side", "entry", "stop_loss", "take_profit_1",
+             "take_profit_2", "atr", "rsi", "ema_fast", "ema_slow", "candle_time"},
+        )
+        self.assertEqual(result["symbol"], "XAU/USD")
         self.assertEqual(result["side"], "BUY")
+        self.assertEqual(result["entry"], bars[-1]["close"])
+        self.assertEqual(result["candle_time"], bars[-1]["time"])
+        self.assertAlmostEqual(result["ema_fast"], 2612.2354104434135, places=9)
+        self.assertAlmostEqual(result["ema_slow"], 2608.5662684642316, places=9)
+        self.assertAlmostEqual(result["rsi"], 65.54844513700353, places=9)
+        self.assertAlmostEqual(result["atr"], 2.373469387755018, places=9)
+        self.assertGreaterEqual(result["rsi"], 50.0)
+        self.assertLessEqual(result["rsi"], 70.0)
+        self.assertGreater(result["ema_fast"], result["ema_slow"])
+        self.assertLess(result["stop_loss"], result["entry"])
+        self.assertGreater(result["take_profit_1"], result["entry"])
+        self.assertGreater(result["take_profit_2"], result["take_profit_1"])
+        risk = result["entry"] - result["stop_loss"]
+        self.assertAlmostEqual(risk, result["atr"] * 1.5, places=9)
+        self.assertAlmostEqual(result["take_profit_1"] - result["entry"], risk, places=9)
+        self.assertAlmostEqual(result["take_profit_2"] - result["entry"], risk * 2.0, places=9)
 
     def test_detects_sell_setup(self):
-        result = detect_signal(self.make_bars("SELL"))
+        bars = self.make_bars("SELL")
+        result = detect_signal(bars)
         self.assertIsNotNone(result)
+        self.assertEqual(
+            set(result),
+            {"symbol", "side", "entry", "stop_loss", "take_profit_1",
+             "take_profit_2", "atr", "rsi", "ema_fast", "ema_slow", "candle_time"},
+        )
+        self.assertEqual(result["symbol"], "XAU/USD")
         self.assertEqual(result["side"], "SELL")
+        self.assertEqual(result["entry"], bars[-1]["close"])
+        self.assertEqual(result["candle_time"], bars[-1]["time"])
+        self.assertAlmostEqual(result["ema_fast"], 2687.959333345908, places=9)
+        self.assertAlmostEqual(result["ema_slow"], 2691.5234964534675, places=9)
+        self.assertAlmostEqual(result["rsi"], 41.05520236728954, places=9)
+        self.assertAlmostEqual(result["atr"], 2.3198364580734023, places=9)
+        self.assertGreaterEqual(result["rsi"], 30.0)
+        self.assertLessEqual(result["rsi"], 50.0)
+        self.assertLess(result["ema_fast"], result["ema_slow"])
+        self.assertGreater(result["stop_loss"], result["entry"])
+        self.assertLess(result["take_profit_1"], result["entry"])
+        self.assertLess(result["take_profit_2"], result["take_profit_1"])
+        risk = result["stop_loss"] - result["entry"]
+        self.assertAlmostEqual(risk, result["atr"] * 1.5, places=9)
+        self.assertAlmostEqual(result["entry"] - result["take_profit_1"], risk, places=9)
+        self.assertAlmostEqual(result["entry"] - result["take_profit_2"], risk * 2.0, places=9)
 
     def test_flat_market_does_not_create_signal(self):
         self.assertIsNone(detect_signal(self.make_bars("FLAT")))
+
+    def test_rejects_buy_cross_when_rsi_exceeds_upper_bound(self):
+        bars = self.make_bars("BUY")
+        bars[-1]["close"] += 5.0
+        bars[-1]["high"] = bars[-1]["close"] + 1.0
+        self.assertIsNone(detect_signal(bars))
+
+    def test_rejects_sell_cross_when_rsi_below_lower_bound(self):
+        bars = self.make_bars("SELL")
+        bars[-1]["close"] -= 10.0
+        bars[-1]["low"] = bars[-1]["close"] - 1.0
+        self.assertIsNone(detect_signal(bars))
 
     def test_buy_stop_is_below_entry_and_targets_above(self):
         result = detect_signal(self.make_bars("BUY"))
@@ -615,3 +669,7 @@ class RunOnceTests(unittest.TestCase):
                 with self.assertRaises(requests.Timeout):
                     run_once(config)
             self.assertEqual(read_state(config.state_file), "")
+
+
+if __name__ == "__main__":
+    unittest.main()

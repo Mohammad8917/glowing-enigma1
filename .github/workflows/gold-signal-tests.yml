@@ -5,10 +5,12 @@ on:
     branches:
       - feature/gold-data-reliability
       - feature/gold-architecture
+      - feature/gold-mutation-quality
   pull_request:
     branches:
       - feature/gold-xauusd-telegram-signals
       - feature/gold-data-reliability
+      - feature/gold-mutation-quality
     paths:
       - "tools/gold_signal_bot/**"
       - ".github/workflows/gold-signal-tests.yml"
@@ -58,3 +60,7 @@ jobs:
       - name: Run complete offline test suite
         run: |
           python -m unittest discover -s tools/gold_signal_bot -p "test_*.py" -v
+
+      - name: Run critical-path mutation audit
+        run: |
+          python tools/gold_signal_bot/mutation_audit.py
