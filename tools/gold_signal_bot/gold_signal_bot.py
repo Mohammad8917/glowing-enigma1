@@ -75,7 +75,7 @@ class Config:
         retry_attempts = int(os.getenv("GOLD_RETRY_ATTEMPTS", "3"))
         retry_base = float(os.getenv("GOLD_RETRY_BASE_SECONDS", "1"))
         stale_multiplier = float(os.getenv("GOLD_STALE_CANDLE_MULTIPLIER", "3"))
-        gap_multiplier = float(os.getenv("GOLD_MAX_GAP_MULTIPLIER", "3"))
+        gap_multiplier = float(os.getenv("GOLD_MAX_GAP_MULTIPLIER", "1.5"))
         if not 1 <= retry_attempts <= 8:
             raise ValueError("GOLD_RETRY_ATTEMPTS must be between 1 and 8")
         if not all(math.isfinite(v) and v > 0 for v in (retry_base, stale_multiplier, gap_multiplier)):
