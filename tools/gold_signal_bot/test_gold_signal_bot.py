@@ -527,6 +527,18 @@ class SignalGenerationTests(unittest.TestCase):
     def test_flat_market_does_not_create_signal(self):
         self.assertIsNone(detect_signal(self.make_bars("FLAT")))
 
+    def test_rejects_buy_cross_when_rsi_exceeds_upper_bound(self):
+        bars = self.make_bars("BUY")
+        bars[-1]["close"] += 5.0
+        bars[-1]["high"] = bars[-1]["close"] + 1.0
+        self.assertIsNone(detect_signal(bars))
+
+    def test_rejects_sell_cross_when_rsi_below_lower_bound(self):
+        bars = self.make_bars("SELL")
+        bars[-1]["close"] -= 10.0
+        bars[-1]["low"] = bars[-1]["close"] - 1.0
+        self.assertIsNone(detect_signal(bars))
+
     def test_buy_stop_is_below_entry_and_targets_above(self):
         result = detect_signal(self.make_bars("BUY"))
         self.assertLess(result["stop_loss"], result["entry"])
