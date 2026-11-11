@@ -31,19 +31,29 @@ class IndicatorTests(unittest.TestCase):
         self.assertEqual(len(result), 5)
         self.assertIsNone(result[0])
         self.assertAlmostEqual(result[2], 2.0)
-        self.assertGreater(result[3], result[2])
+        self.assertAlmostEqual(result[3], 3.0)
+        self.assertAlmostEqual(result[4], 4.0)
 
     def test_rsi_is_bounded(self):
-        result = rsi([float(i) for i in range(30)], 14)
-        self.assertEqual(result[-1], 100.0)
+        result = rsi([1.0, 2.0, 1.0, 2.0], 2)
+        self.assertAlmostEqual(result[2], 50.0)
+        self.assertAlmostEqual(result[3], 75.0)
+        self.assertTrue(all(0.0 <= value <= 100.0 for value in result if value is not None))
 
     def test_atr_is_positive(self):
-        bars = [{"open": 100+i, "high": 102+i, "low": 99+i, "close": 101+i}
-                for i in range(25)]
-        self.assertGreater(atr(bars, 14)[-1], 0)
+        bars = [
+            {"open": 10.0, "high": 12.0, "low": 9.0, "close": 10.0},
+            {"open": 10.0, "high": 13.0, "low": 10.0, "close": 12.0},
+            {"open": 12.0, "high": 14.0, "low": 11.0, "close": 13.0},
+        ]
+        self.assertAlmostEqual(atr(bars, 2)[2], 3.0)
 
     def test_naive_time_is_treated_as_utc(self):
         self.assertEqual(parse_bar_time("2026-11-10 10:00:00").tzinfo, timezone.utc)
+        self.assertEqual(
+            parse_bar_time("2026-11-10T10:00:00+02:00"),
+            datetime(2026, 11, 10, 8, 0, tzinfo=timezone.utc),
+        )
 
     def test_insufficient_history_never_creates_signal(self):
         bars = [{"time": datetime.now(timezone.utc), "open": 1, "high": 2,
@@ -488,8 +498,9 @@ class SignalGenerationTests(unittest.TestCase):
         self.assertLess(result["take_profit_2"], result["take_profit_1"])
 
     def test_custom_r_multiples_are_applied(self):
-        result = detect_signal(self.make_bars("BUY"), tp1_r=1.5, tp2_r=3.0)
+        result = detect_signal(self.make_bars("BUY"), atr_multiplier=2.0, tp1_r=1.5, tp2_r=3.0)
         risk = result["entry"] - result["stop_loss"]
+        self.assertAlmostEqual(risk, result["atr"] * 2.0)
         self.assertAlmostEqual(result["take_profit_1"] - result["entry"], risk * 1.5)
         self.assertAlmostEqual(result["take_profit_2"] - result["entry"], risk * 3.0)
 
