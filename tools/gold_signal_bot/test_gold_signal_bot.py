@@ -148,7 +148,7 @@ class RetryTests(unittest.TestCase):
         response.status_code = 200
         response.headers = {}
         session.get.side_effect = [requests.Timeout("temporary"), response]
-        with patch("gold_signal_bot.time.sleep"):
+        with patch("gold_signal.market_data.time.sleep"):
             result = _get_with_retry(session, "https://example.invalid",
                                      params={}, timeout=5, attempts=2, base_delay=0.1)
         self.assertIs(result, response)
@@ -163,7 +163,7 @@ class RetryTests(unittest.TestCase):
         success.status_code = 200
         success.headers = {}
         session.get.side_effect = [limited, success]
-        with patch("gold_signal_bot.time.sleep") as sleeper:
+        with patch("gold_signal.market_data.time.sleep") as sleeper:
             result = _get_with_retry(session, "https://example.invalid",
                                      params={}, timeout=5, attempts=2, base_delay=0.1)
         self.assertIs(result, success)
@@ -386,7 +386,7 @@ class FetchTests(unittest.TestCase):
             config = self.make_config(folder)
             session = Mock()
             session.get.side_effect = requests.Timeout("offline")
-            with patch("gold_signal_bot.time.sleep"):
+            with patch("gold_signal.market_data.time.sleep"):
                 with self.assertRaises(requests.Timeout):
                     fetch_closed_candles(config, session=session)
         self.assertEqual(session.get.call_count, config.retry_attempts)
@@ -572,9 +572,9 @@ class RunOnceTests(unittest.TestCase):
     def test_no_signal_does_not_send_telegram(self):
         with TemporaryDirectory() as folder:
             config = self.make_config(folder)
-            with patch("gold_signal_bot.fetch_closed_candles", return_value=[]), \
-                 patch("gold_signal_bot.detect_signal", return_value=None), \
-                 patch("gold_signal_bot.send_telegram") as sender:
+            with patch("gold_signal.service.fetch_closed_candles", return_value=[]), \
+                 patch("gold_signal.service.detect_signal", return_value=None), \
+                 patch("gold_signal.service.send_telegram") as sender:
                 result = run_once(config)
         self.assertEqual(result, "no_signal")
         sender.assert_not_called()
@@ -584,9 +584,9 @@ class RunOnceTests(unittest.TestCase):
             config = self.make_config(folder)
             stamp = datetime(2026, 11, 10, 10, 0, tzinfo=timezone.utc)
             write_state(config.state_file, stamp)
-            with patch("gold_signal_bot.fetch_closed_candles", return_value=[]), \
-                 patch("gold_signal_bot.detect_signal", return_value=self.make_signal(stamp)), \
-                 patch("gold_signal_bot.send_telegram") as sender:
+            with patch("gold_signal.service.fetch_closed_candles", return_value=[]), \
+                 patch("gold_signal.service.detect_signal", return_value=self.make_signal(stamp)), \
+                 patch("gold_signal.service.send_telegram") as sender:
                 result = run_once(config)
         self.assertEqual(result, "duplicate")
         sender.assert_not_called()
@@ -595,10 +595,10 @@ class RunOnceTests(unittest.TestCase):
         with TemporaryDirectory() as folder:
             config = self.make_config(folder)
             stamp = datetime(2026, 11, 10, 10, 15, tzinfo=timezone.utc)
-            with patch("gold_signal_bot.fetch_closed_candles", return_value=[]), \
-                 patch("gold_signal_bot.detect_signal", return_value=self.make_signal(stamp)), \
-                 patch("gold_signal_bot.format_signal", return_value="test message"), \
-                 patch("gold_signal_bot.send_telegram") as sender:
+            with patch("gold_signal.service.fetch_closed_candles", return_value=[]), \
+                 patch("gold_signal.service.detect_signal", return_value=self.make_signal(stamp)), \
+                 patch("gold_signal.service.format_signal", return_value="test message"), \
+                 patch("gold_signal.service.send_telegram") as sender:
                 result = run_once(config)
             self.assertEqual(result, "sent")
             sender.assert_called_once()
@@ -608,10 +608,10 @@ class RunOnceTests(unittest.TestCase):
         with TemporaryDirectory() as folder:
             config = self.make_config(folder)
             stamp = datetime(2026, 11, 10, 10, 30, tzinfo=timezone.utc)
-            with patch("gold_signal_bot.fetch_closed_candles", return_value=[]), \
-                 patch("gold_signal_bot.detect_signal", return_value=self.make_signal(stamp)), \
-                 patch("gold_signal_bot.format_signal", return_value="test message"), \
-                 patch("gold_signal_bot.send_telegram", side_effect=requests.Timeout("offline")):
+            with patch("gold_signal.service.fetch_closed_candles", return_value=[]), \
+                 patch("gold_signal.service.detect_signal", return_value=self.make_signal(stamp)), \
+                 patch("gold_signal.service.format_signal", return_value="test message"), \
+                 patch("gold_signal.service.send_telegram", side_effect=requests.Timeout("offline")):
                 with self.assertRaises(requests.Timeout):
                     run_once(config)
             self.assertEqual(read_state(config.state_file), "")
