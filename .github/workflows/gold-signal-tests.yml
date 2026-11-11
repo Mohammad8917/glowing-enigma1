@@ -58,3 +58,7 @@ jobs:
       - name: Run complete offline test suite
         run: |
           python -m unittest discover -s tools/gold_signal_bot -p "test_*.py" -v
+
+      - name: Run critical-path mutation audit
+        run: |
+          python tools/gold_signal_bot/mutation_audit.py
