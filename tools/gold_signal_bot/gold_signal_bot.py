@@ -81,10 +81,12 @@ class Config:
             raise ValueError("GOLD_RETRY_ATTEMPTS must be between 1 and 8")
         if not all(math.isfinite(v) and v > 0 for v in (retry_base, stale_multiplier, gap_multiplier)):
             raise ValueError("Retry delay and candle validation multipliers must be finite positive numbers")
-        state_file = Path(os.getenv(
-            "GOLD_SIGNAL_STATE_FILE",
-            str(Path.home() / ".quantdinger_gold_signal_state.json"),
-        )).expanduser()
+        state_value = os.getenv("GOLD_SIGNAL_STATE_FILE", "").strip()
+        state_file = (
+            Path(state_value).expanduser()
+            if state_value
+            else Path.home() / ".quantdinger_gold_signal_state.json"
+        )
         return cls(api_key, bot_token, chat_id, timeframe, poll_seconds,
                    atr_multiplier, tp1_r, tp2_r, state_file,
                    max(5, int(os.getenv("GOLD_HTTP_TIMEOUT", "20"))),
@@ -402,9 +404,10 @@ def process_lock(state_path: Path) -> Iterator[None]:
         handle = lock_path.open("a+b")
         if os.name == "nt":
             import msvcrt
-            handle.seek(0)
-            if handle.read(1) == b"":
-                handle.seek(0)
+            # Inspect file length instead of reading the locked byte: on Windows,
+            # another process holding the byte-range lock may deny that read.
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
                 handle.write(b"0")
                 handle.flush()
             handle.seek(0)
