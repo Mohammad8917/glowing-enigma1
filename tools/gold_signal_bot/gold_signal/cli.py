@@ -27,6 +27,7 @@ def _redact(message: Any, config: Config) -> str:
 
 
 def main() -> int:
+    load_dotenv(ROOT / ".env")
     parser = argparse.ArgumentParser(description="Signal-only XAUUSD notifier; no broker or order execution.")
     parser.add_argument("--once", action="store_true", help="check once and exit")
     parser.add_argument("--test-telegram", action="store_true", help="send a Telegram connectivity test")
