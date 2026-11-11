@@ -3,10 +3,12 @@ name: GOLD Signal Bot Tests
 on:
   push:
     branches:
-      - feature/gold-data-reliability\n      - feature/gold-architecture
+      - feature/gold-data-reliability
+      - feature/gold-architecture
   pull_request:
     branches:
-      - feature/gold-xauusd-telegram-signals\n      - feature/gold-data-reliability
+      - feature/gold-xauusd-telegram-signals
+      - feature/gold-data-reliability
     paths:
       - "tools/gold_signal_bot/**"
       - ".github/workflows/gold-signal-tests.yml"
@@ -39,7 +41,7 @@ jobs:
 
       - name: Verify modular package imports
         run: |
-          python -c "from gold_signal import config, indicators, market_data, service, state, strategy, telegram; print('GOLD architecture imports: OK')"
+          python -c "import sys; sys.path.insert(0, 'tools/gold_signal_bot'); from gold_signal import config, indicators, market_data, service, state, strategy, telegram; print('GOLD architecture imports: OK')"
 
       - name: Compile all bot modules
         run: |
