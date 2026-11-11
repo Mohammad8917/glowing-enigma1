@@ -8,11 +8,13 @@ import math
 import os
 import signal
 import sys
+import threading
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import requests
 from dotenv import load_dotenv
@@ -41,6 +43,10 @@ class Config:
     tp2_r: float
     state_file: Path
     http_timeout: int
+    retry_attempts: int
+    retry_base_seconds: float
+    stale_multiplier: float
+    gap_multiplier: float
 
     @classmethod
     def from_env(cls, *, require_market_data: bool = True) -> "Config":
@@ -67,13 +73,24 @@ class Config:
             raise ValueError("ATR multiplier and TP R-multiples must be finite positive numbers")
         if tp2_r <= tp1_r:
             raise ValueError("GOLD_TP2_R must be greater than GOLD_TP1_R")
-        state_file = Path(os.getenv(
-            "GOLD_SIGNAL_STATE_FILE",
-            str(Path.home() / ".quantdinger_gold_signal_state.json"),
-        )).expanduser()
+        retry_attempts = int(os.getenv("GOLD_RETRY_ATTEMPTS", "3"))
+        retry_base = float(os.getenv("GOLD_RETRY_BASE_SECONDS", "1"))
+        stale_multiplier = float(os.getenv("GOLD_STALE_CANDLE_MULTIPLIER", "3"))
+        gap_multiplier = float(os.getenv("GOLD_MAX_GAP_MULTIPLIER", "1.5"))
+        if not 1 <= retry_attempts <= 8:
+            raise ValueError("GOLD_RETRY_ATTEMPTS must be between 1 and 8")
+        if not all(math.isfinite(v) and v > 0 for v in (retry_base, stale_multiplier, gap_multiplier)):
+            raise ValueError("Retry delay and candle validation multipliers must be finite positive numbers")
+        state_value = os.getenv("GOLD_SIGNAL_STATE_FILE", "").strip()
+        state_file = (
+            Path(state_value).expanduser()
+            if state_value
+            else Path.home() / ".quantdinger_gold_signal_state.json"
+        )
         return cls(api_key, bot_token, chat_id, timeframe, poll_seconds,
                    atr_multiplier, tp1_r, tp2_r, state_file,
-                   max(5, int(os.getenv("GOLD_HTTP_TIMEOUT", "20"))))
+                   max(5, int(os.getenv("GOLD_HTTP_TIMEOUT", "20"))),
+                   retry_attempts, retry_base, stale_multiplier, gap_multiplier)
 
 
 def parse_bar_time(value: Any) -> datetime:
@@ -86,45 +103,150 @@ def parse_bar_time(value: Any) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _redact(message: Any, config: Config) -> str:
+    value = str(message)
+    for secret in (config.api_key, config.bot_token):
+        if secret:
+            value = value.replace(secret, "[REDACTED]")
+    return value[:500]
+
+
+def _is_expected_gold_pause(start: datetime, end: datetime) -> bool:
+    """Conservative UTC exceptions for the daily maintenance break and weekend closure.
+
+    Spot-metal provider sessions vary and can shift with DST. This deliberately
+    exempts only obvious pause windows; tune data-age/gap limits for the provider.
+    """
+    if start.weekday() == 4 and (start.hour > 20 or (start.hour == 20 and start.minute >= 30)):
+        if end.weekday() == 5 or (end.weekday() == 6 and (end.hour < 22 or (end.hour == 22 and end.minute == 0))):
+            return True
+    if start.weekday() == 5:
+        if end.weekday() == 5 or (end.weekday() == 6 and (end.hour < 22 or (end.hour == 22 and end.minute == 0))):
+            return True
+    if start.weekday() == 6 and end.weekday() == 6 and (end.hour < 22 or (end.hour == 22 and end.minute == 0)):
+        return True
+    # Common one-hour daily liquidity/maintenance pause, with a 30-minute margin.
+    if start.date() == end.date():
+        pause_start = start.replace(hour=20, minute=30, second=0, microsecond=0)
+        pause_end = start.replace(hour=22, minute=30, second=0, microsecond=0)
+        return start >= pause_start and end <= pause_end
+    return False
+
+
+def validate_candles(candles: list[dict[str, Any]], *, timeframe_seconds: int,
+                     now: datetime | None = None, stale_multiplier: float = 3.0,
+                     gap_multiplier: float = 1.5) -> list[dict[str, Any]]:
+    """Validate sorted, unique, closed OHLC bars and reject stale/incomplete history."""
+    if timeframe_seconds <= 0:
+        raise ValueError("timeframe_seconds must be positive")
+    if not candles:
+        raise RuntimeError("No valid XAU/USD candles received")
+    current = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    by_time: dict[datetime, dict[str, Any]] = {}
+    for source in candles:
+        try:
+            stamp = parse_bar_time(source["time"])
+            values = {key: float(source[key]) for key in ("open", "high", "low", "close")}
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError("A candle has a missing or invalid timestamp/OHLC field") from exc
+        if not all(math.isfinite(v) for v in values.values()):
+            raise RuntimeError("A candle contains a non-finite OHLC value")
+        o, h, low, close = values["open"], values["high"], values["low"], values["close"]
+        if low <= 0 or h < max(o, close, low) or low > min(o, close):
+            raise RuntimeError("A candle violates OHLC price invariants")
+        if stamp + timedelta(seconds=timeframe_seconds) > current:
+            raise RuntimeError("Provider returned an unclosed or future XAU/USD candle")
+        normalized = {"time": stamp, **values}
+        previous = by_time.get(stamp)
+        if previous is not None and previous != normalized:
+            raise RuntimeError("Provider returned conflicting duplicate candles")
+        by_time[stamp] = normalized
+    result = [by_time[key] for key in sorted(by_time)]
+    if len(result) < 60:
+        raise RuntimeError(f"Only {len(result)} valid closed XAU/USD candles received; at least 60 are required")
+    latest_end = result[-1]["time"] + timedelta(seconds=timeframe_seconds)
+    age_seconds = (current - latest_end).total_seconds()
+    max_age = timeframe_seconds * stale_multiplier
+    if age_seconds > max_age and not _is_expected_gold_pause(latest_end, current):
+        raise RuntimeError(
+            f"XAU/USD data is stale: latest closed candle is {int(age_seconds)} seconds old "
+            f"(limit {int(max_age)} seconds)"
+        )
+    for left, right in zip(result, result[1:]):
+        gap_seconds = (right["time"] - left["time"]).total_seconds()
+        if gap_seconds > timeframe_seconds * gap_multiplier:
+            left_end = left["time"] + timedelta(seconds=timeframe_seconds)
+            if not _is_expected_gold_pause(left_end, right["time"]):
+                raise RuntimeError(
+                    f"Missing XAU/USD candles: unexpected {int(gap_seconds)}-second gap "
+                    f"after {left['time'].isoformat()}"
+                )
+    return result
+
+
+def _get_with_retry(client: requests.Session, url: str, *, params: dict[str, Any],
+                    timeout: int, attempts: int, base_delay: float) -> requests.Response:
+    last_error: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            response = client.get(url, params=params, timeout=timeout)
+            if response.status_code in (408, 425, 429) or response.status_code >= 500:
+                if attempt + 1 == attempts:
+                    response.raise_for_status()
+                retry_after = response.headers.get("Retry-After", "")
+                try:
+                    delay = min(30.0, max(0.0, float(retry_after)))
+                except (TypeError, ValueError):
+                    delay = min(30.0, base_delay * (2 ** attempt))
+                time.sleep(delay)
+                continue
+            response.raise_for_status()
+            return response
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            last_error = exc
+            if attempt + 1 == attempts:
+                raise
+            time.sleep(min(30.0, base_delay * (2 ** attempt)))
+    if last_error:
+        raise last_error
+    raise RuntimeError("Market-data request failed after retries")
+
+
 def fetch_closed_candles(config: Config, session: requests.Session | None = None) -> list[dict[str, Any]]:
     """Fetch spot XAU/USD from Twelve Data only; never substitute futures."""
     client = session or requests.Session()
-    response = client.get(
-        TWELVE_DATA_URL,
+    response = _get_with_retry(
+        client, TWELVE_DATA_URL,
         params={"symbol": "XAU/USD", "interval": config.timeframe, "outputsize": 120,
                 "timezone": "UTC", "format": "ISO", "apikey": config.api_key},
-        timeout=config.http_timeout,
+        timeout=config.http_timeout, attempts=config.retry_attempts,
+        base_delay=config.retry_base_seconds,
     )
-    response.raise_for_status()
     payload = response.json()
     if not isinstance(payload, dict):
         raise RuntimeError("Twelve Data returned an unexpected response")
     if payload.get("status") == "error" or payload.get("code"):
-        raise RuntimeError(f"Twelve Data error: {payload.get('message') or payload.get('code')}")
+        message = str(payload.get("message") or payload.get("code") or "unknown provider error")
+        if "rate" in message.lower() or str(payload.get("code")) == "429":
+            raise RuntimeError("Twelve Data rate limit reached; retry on the next polling cycle")
+        raise RuntimeError(f"Twelve Data error: {message[:250]}")
     values = payload.get("values")
     if not isinstance(values, list) or not values:
         raise RuntimeError("Twelve Data returned no XAU/USD candles")
-    now = datetime.now(timezone.utc)
-    seconds = TIMEFRAMES[config.timeframe][1]
-    candles = []
+    parsed = []
     for item in values:
+        if not isinstance(item, dict):
+            raise RuntimeError("Twelve Data returned a malformed candle record")
         try:
-            bar_time = parse_bar_time(item["datetime"])
-            candle = {"time": bar_time, "open": float(item["open"]), "high": float(item["high"]),
-                      "low": float(item["low"]), "close": float(item["close"])}
-            if not all(math.isfinite(candle[k]) for k in ("open", "high", "low", "close")):
-                continue
-            if candle["low"] <= 0 or candle["high"] < candle["low"]:
-                continue
-            if bar_time + timedelta(seconds=seconds) <= now:
-                candles.append(candle)
-        except (KeyError, TypeError, ValueError, OverflowError):
-            continue
-    candles.sort(key=lambda c: c["time"])
-    result = list({c["time"]: c for c in candles}.values())
-    if len(result) < 60:
-        raise RuntimeError(f"Only {len(result)} fully closed XAU/USD candles received; at least 60 are required")
-    return result
+            parsed.append({"time": parse_bar_time(item["datetime"]),
+                           "open": float(item["open"]), "high": float(item["high"]),
+                           "low": float(item["low"]), "close": float(item["close"])})
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise RuntimeError("Twelve Data returned a candle with invalid fields") from exc
+    seconds = TIMEFRAMES[config.timeframe][1]
+    return validate_candles(parsed, timeframe_seconds=seconds,
+                            stale_multiplier=config.stale_multiplier,
+                            gap_multiplier=config.gap_multiplier)
 
 
 def ema(values: list[float], period: int) -> list[float | None]:
@@ -225,6 +347,7 @@ def format_signal(data: dict[str, Any], timeframe: str) -> str:
 
 
 def send_telegram(config: Config, message: str, session: requests.Session | None = None) -> None:
+    """Do not blindly retry POST: a timeout can happen after Telegram accepted it."""
     client = session or requests.Session()
     response = client.post(TELEGRAM_URL.format(token=config.bot_token),
                            data={"chat_id": config.chat_id, "text": message,
@@ -238,7 +361,10 @@ def send_telegram(config: Config, message: str, session: requests.Session | None
 
 def read_state(path: Path) -> str:
     try:
-        return str(json.loads(path.read_text(encoding="utf-8")).get("last_signal_candle") or "")
+        state = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(state, dict):
+            raise ValueError("state must be a JSON object")
+        return str(state.get("last_signal_candle") or "")
     except FileNotFoundError:
         return ""
     except (OSError, ValueError, AttributeError):
@@ -248,26 +374,88 @@ def read_state(path: Path) -> str:
 
 def write_state(path: Path, candle_time: datetime) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps({"last_signal_candle": candle_time.isoformat()}), encoding="utf-8")
-    temp.replace(path)
+    temp = path.with_name(path.name + f".{os.getpid()}.tmp")
+    try:
+        with temp.open("w", encoding="utf-8") as stream:
+            json.dump({"last_signal_candle": candle_time.isoformat()}, stream)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temp, path)
+    finally:
+        try:
+            temp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
+
+_LOCAL_PROCESS_GUARD = threading.Lock()
+
+
+@contextmanager
+def process_lock(state_path: Path) -> Iterator[None]:
+    """Cross-platform advisory lock plus in-process guard for duplicate bot instances."""
+    if not _LOCAL_PROCESS_GUARD.acquire(blocking=False):
+        raise RuntimeError("Another GOLD notifier instance is already running")
+    lock_path = state_path.with_name(state_path.name + ".lock")
+    handle = None
+    acquired = False
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
+        if os.name == "nt":
+            import msvcrt
+            # Inspect file length instead of reading the locked byte: on Windows,
+            # another process holding the byte-range lock may deny that read.
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                handle.write(b"0")
+                handle.flush()
+            handle.seek(0)
+            try:
+                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                raise RuntimeError("Another GOLD notifier instance is already running") from exc
+        else:
+            import fcntl
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                raise RuntimeError("Another GOLD notifier instance is already running") from exc
+        acquired = True
+        yield
+    finally:
+        if handle is not None:
+            if acquired:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            handle.close()
+        _LOCAL_PROCESS_GUARD.release()
 
 def run_once(config: Config, session: requests.Session | None = None) -> str:
-    candles = fetch_closed_candles(config, session=session)
-    data = detect_signal(candles, atr_multiplier=config.atr_multiplier,
-                         tp1_r=config.tp1_r, tp2_r=config.tp2_r)
-    if not data:
-        LOG.info("No new confirmed GOLD signal on %s", config.timeframe)
-        return "no_signal"
-    key = data["candle_time"].isoformat()
-    if key == read_state(config.state_file):
-        LOG.info("Signal for this candle was already delivered")
-        return "duplicate"
-    send_telegram(config, format_signal(data, config.timeframe), session=session)
-    write_state(config.state_file, data["candle_time"])
-    LOG.info("Delivered %s XAU/USD signal for candle %s", data["side"], key)
-    return "sent"
+    with process_lock(config.state_file):
+        candles = fetch_closed_candles(config, session=session)
+        data = detect_signal(candles, atr_multiplier=config.atr_multiplier,
+                             tp1_r=config.tp1_r, tp2_r=config.tp2_r)
+        if not data:
+            LOG.info("No new confirmed GOLD signal on %s", config.timeframe)
+            return "no_signal"
+        key = data["candle_time"].isoformat()
+        if key == read_state(config.state_file):
+            LOG.info("Signal for this candle was already delivered")
+            return "duplicate"
+        send_telegram(config, format_signal(data, config.timeframe), session=session)
+        # Persist only after Telegram confirms success; a failed send remains eligible next cycle.
+        write_state(config.state_file, data["candle_time"])
+        LOG.info("Delivered %s XAU/USD signal for candle %s", data["side"], key)
+        return "sent"
 
 
 def main() -> int:
@@ -288,14 +476,14 @@ def main() -> int:
             LOG.info("Telegram test message delivered")
             return 0
         except Exception as exc:
-            LOG.error("Telegram test failed: %s", exc)
+            LOG.error("Telegram test failed: %s", _redact(exc, config))
             return 1
     if args.once:
         try:
             run_once(config)
             return 0
         except Exception as exc:
-            LOG.error("GOLD check failed: %s", exc)
+            LOG.error("GOLD check failed: %s", _redact(exc, config))
             return 1
     stopping = False
     def stop_handler(_signum: int, _frame: Any) -> None:
@@ -311,7 +499,7 @@ def main() -> int:
         try:
             run_once(config)
         except Exception as exc:
-            LOG.error("GOLD check failed; will retry: %s", exc)
+            LOG.error("GOLD check failed; will retry next cycle: %s", _redact(exc, config))
         for _ in range(config.poll_seconds):
             if stopping:
                 break
