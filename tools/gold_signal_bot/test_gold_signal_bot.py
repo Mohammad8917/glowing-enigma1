@@ -169,3 +169,412 @@ class StateAndLockTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConfigTests(unittest.TestCase):
+    def test_requires_market_data_api_key(self):
+        with patch.dict("os.environ", {"GOLD_TELEGRAM_BOT_TOKEN": "t", "GOLD_TELEGRAM_CHAT_ID": "c"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "GOLD_TWELVE_DATA_API_KEY"):
+                Config.from_env()
+
+    def test_requires_telegram_bot_token(self):
+        with patch.dict("os.environ", {"GOLD_TWELVE_DATA_API_KEY": "k", "GOLD_TELEGRAM_CHAT_ID": "c"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "GOLD_TELEGRAM_BOT_TOKEN"):
+                Config.from_env()
+
+    def test_requires_telegram_chat_id(self):
+        with patch.dict("os.environ, {"GOLD_TWELVE_DATA_API_KEY": "k", "GOLD_TELEGRAM_BOT_TOKEN": "t"}, clear=True):
+            with self.assertRaisesRegex(ValueError, "GOLD_TELEGRAM_CHAT_ID"):
+                Config.from_env()
+
+    def test_rejects_unsupported_timeframe(self):
+        env = {"GOLD_TWELVE_DATA_API_KEY": "k", "GOLD_TELEGRAM_BOT_TOKEN": "t",
+               "GOLD_TELEGRAM_CHAT_ID": "c", "GOLD_TIMEFRAME": "2min"}
+        with patch.dict("os.environ", env, clear=True):
+            with self.assertRaisesRegex(ValueError, "Unsupported GOLD_TIMEFRAME"):
+                Config.from_env()
+
+    def test_rejects_poll_interval_below_minimum(self):
+        env = {"GOLD_TWELVE_DATA_API_KEY": "k", "GOLD_TELEGRAM_BOT_TOKEN": "t",
+               "GOLD_TELEGRAM_CHAT_ID": "c", "GOLD_POLL_SECONDS": "9"}
+        with patch.dict("os.environ", env, clear=True):
+            with self.assertRaisesRegex(ValueError, "at least 10"):
+                Config.from_env()
+
+    def test_rejects_nonpositive_atr_multiplier(self):
+        env = {"GOLD_TWELVE_DATA_API_KEY": "k", "GOLD_TELEGRAM_BOT_TOKEN": "t",
+               "GOLD_TELEGRAM_CHAT_ID": "c", "GOLD_RISK_ATR_MULTIPLIER": "0"}
+        with patch.dict("os.environ", env, clear=True):
+            with self.assertRaisesRegex(ValueError, "finite positive"):
+                Config.from_env()
+
+    def test_requires_tp2_greater_than_tp1(self):
+        env = {"GOLD_TWELVE_DATA_API_KEY": "k", "GOLD_TELEGRAM_BOT_TOKEN": "t",
+               "GOLD_TELEGRAM_CHAT_ID": "c", "GOLD_TP1_R": "2", "GOLD_TP2_R": "2"}
+        with patch.dict("os.environ", env, clear=True):
+            with self.assertRaisesRegex(ValueError, "TP2_R must be greater"):
+                Config.from_env()
+
+    def test_rejects_retry_attempts_above_limit(self):
+        env = {"GOLD_TWELVE_DATA_API_KEY": "k", "GOLD_TELEGRAM_BOT_TOKEN": "t",
+               "GOLD_TELEGRAM_CHAT_ID": "c", "GOLD_RETRY_ATTEMPTS": "9"}
+        with patch.dict("os.environ", env, clear=True):
+            with self.assertRaisesRegex(ValueError, "between 1 and 8"):
+                Config.from_env()
+
+    def test_rejects_zero_retry_base_delay(self):
+        env = {"GOLD_TWELVE_DATA_API_KEY": "k", "GOLD_TELEGRAM_BOT_TOKEN": "t",
+               "GOLD_TELEGRAM_CHAT_ID": "c", "GOLD_RETRY_BASE_SECONDS": "0"}
+        with patch.dict("os.environ", env, clear=True):
+            with self.assertRaisesRegex(ValueError, "finite positive"):
+                Config.from_env()
+
+    def test_reads_custom_environment_values(self):
+        env = {"GOLD_TWELVE_DATA_API_KEY": "k", "GOLD_TELEGRAM_BOT_TOKEN": "t",
+               "GOLD_TELEGRAM_CHAT_ID": "c", "GOLD_TIMEFRAME": "1h",
+               "GOLD_POLL_SECONDS": "120", "GOLD_RETRY_ATTEMPTS": "5",
+               "GOLD_RETRY_BASE_SECONDS": "0.25", "GOLD_MAX_GAP_MULTIPLIER": "2"}
+        with patch.dict("os.environ", env, clear=True):
+            config = Config.from_env()
+        self.assertEqual(config.timeframe, "1h")
+        self.assertEqual(config.poll_seconds, 120)
+        self.assertEqual(config.retry_attempts, 5)
+        self.assertAlmostEqual(config.retry_base_seconds, 0.25)
+        self.assertAlmostEqual(config.gap_multiplier, 2.0)
+
+    def test_rejects_invalid_gap_multiplier(self):
+        env = {"GOLD_TWELVE_DATA_API_KEY": "k", "GOLD_TELEGRAM_BOT_TOKEN": "t",
+               "GOLD_TELEGRAM_CHAT_ID": "c", "GOLD_MAX_GAP_MULTIPLIER": "-1"}
+        with patch.dict("os.environ", env, clear=True):
+            with self.assertRaisesRegex(ValueError, "finite positive"):
+                Config.from_env()
+
+
+class FetchTests(unittest.TestCase):
+    def make_config(self, folder):
+        return Config("api-key", "bot-token", "chat-id", "15min", 45, 1.5, 1.0, 2.0,
+                      Path(folder) / "state.json", 5, 2, 0.01, 3.0, 1.5)
+
+    def make_payload(self, count=65):
+        now = datetime.now(timezone.utc)
+        last_open = now - timedelta(seconds=905)
+        first_open = last_open - timedelta(seconds=900 * (count - 1))
+        values = []
+        for i in range(count):
+            stamp = first_open + timedelta(seconds=900 * i)
+            price = 2600.0 + i * 0.1
+            values.append({"datetime": stamp.isoformat(), "open": str(price),
+                           "high": str(price + 1), "low": str(price - 1),
+                           "close": str(price + 0.5)})
+        return values
+
+    def test_fetches_valid_spot_xauusd_and_sorts_bars(self):
+        with TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            response = Mock()
+            response.status_code = 200
+            response.headers = {}
+            response.json.return_value = {"values": list(reversed(self.make_payload()))}
+            session = Mock()
+            session.get.return_value = response
+            bars = fetch_closed_candles(config, session=session)
+        self.assertEqual(len(bars), 65)
+        self.assertLess(bars[0]["time"], bars[-1]["time"])
+        params = session.get.call_args.kwargs["params"]
+        self.assertEqual(params["symbol"], "XAU/USD")
+        self.assertEqual(params["interval"], "15min")
+        self.assertEqual(params["apikey"], "api-key")
+
+    def test_provider_error_payload_is_reported(self):
+        with TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            response = Mock()
+            response.status_code = 200
+            response.headers = {}
+            response.json.return_value = {"status": "error", "message": "Invalid API key"}
+            session = Mock()
+            session.get.return_value = response
+            with self.assertRaisesRegex(RuntimeError, "Twelve Data error"):
+                fetch_closed_candles(config, session=session)
+
+    def test_provider_rate_limit_payload_is_reported(self):
+        with TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            response = Mock()
+            response.status_code = 200
+            response.headers = {}
+            response.json.return_value = {"status": "error", "message": "Rate limit exceeded"}
+            session = Mock()
+            session.get.return_value = response
+            with self.assertRaisesRegex(RuntimeError, "rate limit"):
+                fetch_closed_candles(config, session=session)
+
+    def test_empty_provider_values_are_rejected(self):
+        with TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            response = Mock()
+            response.status_code = 200
+            response.headers = {}
+            response.json.return_value = {"values": []}
+            session = Mock()
+            session.get.return_value = response
+            with self.assertRaisesRegex(RuntimeError, "no XAU/USD candles"):
+                fetch_closed_candles(config, session=session)
+
+    def test_non_object_provider_payload_is_rejected(self):
+        with TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            response = Mock()
+            response.status_code = 200
+            response.headers = {}
+            response.json.return_value = ["unexpected"]
+            session = Mock()
+            session.get.return_value = response
+            with self.assertRaisesRegex(RuntimeError, "unexpected response"):
+                fetch_closed_candles(config, session=session)
+
+    def test_malformed_provider_candle_is_rejected(self):
+        with TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            response = Mock()
+            response.status_code = 200
+            response.headers = {}
+            response.json.return_value = {"values": [{"datetime": "2026-11-10T10:00:00Z"}]}
+            session = Mock()
+            session.get.return_value = response
+            with self.assertRaisesRegex(RuntimeError, "invalid fields"):
+                fetch_closed_candles(config, session=session)
+
+    def test_network_timeout_after_retries_is_propagated(self):
+        with TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            session = Mock()
+            session.get.side_effect = requests.Timeout("offline")
+            with patch("gold_signal_bot.time.sleep"):
+                with self.assertRaises(requests.Timeout):
+                    fetch_closed_candles(config, session=session)
+        self.assertEqual(session.get.call_count, config.retry_attempts)
+
+    def test_provider_response_with_non_dict_candle_is_rejected(self):
+        with TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            response = Mock()
+            response.status_code = 200
+            response.headers = {}
+            response.json.return_value = {"values": ["bad-record"]}
+            session = Mock()
+            session.get.return_value = response
+            with self.assertRaisesRegex(RuntimeError, "malformed candle"):
+                fetch_closed_candles(config, session=session)
+
+
+class TelegramTests(unittest.TestCase):
+    def make_config(self, folder):
+        return Config("api-key", "secret-bot-token", "channel-123", "15min", 45, 1.5, 1.0, 2.0,
+                      Path(folder) / "state.json", 5, 2, 0.01, 3.0, 1.5)
+
+    def test_sends_message_with_expected_telegram_fields(self):
+        with TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            response = Mock()
+            response.json.return_value = {"ok": True, "result": {"message_id": 7}}
+            session = Mock()
+            session.post.return_value = response
+            send_telegram(config, "hello", session=session)
+        args, kwargs = session.post.call_args
+        self.assertIn("secret-bot-token", args[0])
+        self.assertEqual(kwargs["data"]["chat_id"], "channel-123")
+        self.assertEqual(kwargs["data"]["text"], "hello")
+        self.assertEqual(kwargs["data"]["parse_mode"], "HTML")
+
+    def test_raises_on_telegram_http_error(self):
+        with TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            response = Mock()
+            response.raise_for_status.side_effect = requests.HTTPError("bad response")
+            session = Mock()
+            session.post.return_value = response
+            with self.assertRaises(requests.HTTPError):
+                send_telegram(config, "hello", session=session)
+
+    def test_raises_when_telegram_api_returns_ok_false(self):
+        with TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            response = Mock()
+            response.json.return_value = {"ok": False, "description": "chat not found"}
+            session = Mock()
+            session.post.return_value = response
+            with self.assertRaisesRegex(RuntimeError, "Telegram rejected"):
+                send_telegram(config, "hello", session=session)
+
+    def test_does_not_retry_ambiguous_telegram_timeout(self):
+        with TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            session = Mock()
+            session.post.side_effect = requests.Timeout("response lost")
+            with self.assertRaises(requests.Timeout):
+                send_telegram(config, "hello", session=session)
+        self.assertEqual(session.post.call_count, 1)
+
+
+class SignalGenerationTests(unittest.TestCase):
+    def make_bars(self, side="BUY"):
+        if side == "BUY":
+            base = [2600 + i * 0.25 + (0.4 if i % 2 == 0 else -0.4) for i in range(58)]
+            closes = base + [base[-1] - 2, base[-1] + 2]
+        elif side == "SELL":
+            base = [2700 - i * 0.25 + (0.4 if i % 2 == 0 else -0.4) for i in range(58)]
+            closes = base + [base[-1] + 3, base[-1] + 1]
+        else:
+            closes = [2600.0] * 60
+        start = datetime(2026, 11, 10, 0, 0, tzinfo=timezone.utc)
+        bars = []
+        for i, close in enumerate(closes):
+            open_price = close - 0.1
+            bars.append({"time": start + timedelta(minutes=15 * i), "open": open_price,
+                         "high": max(open_price, close) + 1,
+                         "low": min(open_price, close) - 1, "close": close})
+        return bars
+
+    def test_detects_buy_setup(self):
+        result = detect_signal(self.make_bars("BUY"))
+        self.assertIsNotNone(result)
+        self.assertEqual(result["side"], "BUY")
+
+    def test_detects_sell_setup(self):
+        result = detect_signal(self.make_bars("SELL"))
+        self.assertIsNotNone(result)
+        self.assertEqual(result["side"], "SELL")
+
+    def test_flat_market_does_not_create_signal(self):
+        self.assertIsNone(detect_signal(self.make_bars("FLAT")))
+
+    def test_buy_stop_is_below_entry_and_targets_above(self):
+        result = detect_signal(self.make_bars("BUY"))
+        self.assertLess(result["stop_loss"], result["entry"])
+        self.assertGreater(result["take_profit_1"], result["entry"])
+        self.assertGreater(result["take_profit_2"], result["take_profit_1"])
+
+    def test_sell_stop_is_above_entry_and_targets_below(self):
+        result = detect_signal(self.make_bars("SELL"))
+        self.assertGreater(result["stop_loss"], result["entry"])
+        self.assertLess(result["take_profit_1"], result["entry"])
+        self.assertLess(result["take_profit_2"], result["take_profit_1"])
+
+    def test_custom_r_multiples_are_applied(self):
+        result = detect_signal(self.make_bars("BUY"), tp1_r=1.5, tp2_r=3.0)
+        risk = result["entry"] - result["stop_loss"]
+        self.assertAlmostEqual(result["take_profit_1"] - result["entry"], risk * 1.5)
+        self.assertAlmostEqual(result["take_profit_2"] - result["entry"], risk * 3.0)
+
+    def test_short_history_returns_no_signal(self):
+        self.assertIsNone(detect_signal(self.make_bars("BUY")[:59]))
+
+    def test_signal_carries_the_last_candle_timestamp(self):
+        bars = self.make_bars("BUY")
+        result = detect_signal(bars)
+        self.assertEqual(result["candle_time"], bars[-1]["time"])
+
+    def test_signal_is_for_spot_xauusd_symbol(self):
+        result = detect_signal(self.make_bars("BUY"))
+        self.assertEqual(result["symbol"], "XAU/USD")
+
+
+class FormattingTests(unittest.TestCase):
+    def test_formats_candle_timestamp_as_utc(self):
+        stamp = datetime(2026, 11, 10, 12, 30, tzinfo=timezone.utc)
+        data = {"side": "BUY", "entry": 2600, "stop_loss": 2590,
+                "take_profit_1": 2610, "take_profit_2": 2620,
+                "rsi": 60, "atr": 5, "candle_time": stamp}
+        message = format_signal(data, "15min")
+        self.assertIn("2026-11-10 12:30 UTC", message)
+
+    def test_message_contains_signal_risk_and_signal_only_notice(self):
+        stamp = datetime(2026, 11, 10, 12, 30, tzinfo=timezone.utc)
+        data = {"side": "SELL", "entry": 2600, "stop_loss": 2610,
+                "take_profit_1": 2590, "take_profit_2": 2580,
+                "rsi": 40, "atr": 5, "candle_time": stamp}
+        message = format_signal(data, "1h")
+        for fragment in ("SELL", "1h", "حد ضرر", "حد سود", "هیچ سفارشی اجرا نشده"):
+            self.assertIn(fragment, message)
+
+
+class AdditionalStateTests(unittest.TestCase):
+    def test_corrupt_state_json_fails_safe_to_empty(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "state.json"
+            path.write_text("{not-json", encoding="utf-8")
+            self.assertEqual(read_state(path), "")
+
+    def test_non_object_state_json_fails_safe_to_empty(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "state.json"
+            path.write_text("[]", encoding="utf-8")
+            self.assertEqual(read_state(path), "")
+
+    def test_write_state_creates_parent_and_cleans_temp_file(self):
+        with TemporaryDirectory() as folder:
+            path = Path(folder) / "nested" / "state.json"
+            stamp = datetime(2026, 11, 10, 10, 0, tzinfo=timezone.utc)
+            write_state(path, stamp)
+            self.assertEqual(read_state(path), stamp.isoformat())
+            self.assertEqual(list(path.parent.glob("*.tmp")), [])
+
+
+class RunOnceTests(unittest.TestCase):
+    def make_config(self, folder):
+        return Config("api-key", "bot-token", "chat-id", "15min", 45, 1.5, 1.0, 2.0,
+                      Path(folder) / "state.json", 5, 2, 0.01, 3.0, 1.5)
+
+    def make_signal(self, stamp):
+        return {"symbol": "XAU/USD", "side": "BUY", "entry": 2600.0,
+                "stop_loss": 2590.0, "take_profit_1": 2610.0,
+                "take_profit_2": 2620.0, "atr": 6.0, "rsi": 60.0,
+                "ema_fast": 2598.0, "ema_slow": 2590.0, "candle_time": stamp}
+
+    def test_no_signal_does_not_send_telegram(self):
+        with TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            with patch("gold_signal_bot.fetch_closed_candles", return_value=[]), \
+                 patch("gold_signal_bot.detect_signal", return_value=None), \
+                 patch("gold_signal_bot.send_telegram") as sender:
+                result = run_once(config)
+        self.assertEqual(result, "no_signal")
+        sender.assert_not_called()
+
+    def test_duplicate_signal_is_not_sent_twice(self):
+        with TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            stamp = datetime(2026, 11, 10, 10, 0, tzinfo=timezone.utc)
+            write_state(config.state_file, stamp)
+            with patch("gold_signal_bot.fetch_closed_candles", return_value=[]), \
+                 patch("gold_signal_bot.detect_signal", return_value=self.make_signal(stamp)), \
+                 patch("gold_signal_bot.send_telegram") as sender:
+                result = run_once(config)
+        self.assertEqual(result, "duplicate")
+        sender.assert_not_called()
+
+    def test_successful_send_persists_signal_candle(self):
+        with TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            stamp = datetime(2026, 11, 10, 10, 15, tzinfo=timezone.utc)
+            with patch("gold_signal_bot.fetch_closed_candles", return_value=[]), \
+                 patch("gold_signal_bot.detect_signal", return_value=self.make_signal(stamp)), \
+                 patch("gold_signal_bot.format_signal", return_value="test message"), \
+                 patch("gold_signal_bot.send_telegram") as sender:
+                result = run_once(config)
+            self.assertEqual(result, "sent")
+            sender.assert_called_once()
+            self.assertEqual(read_state(config.state_file), stamp.isoformat())
+
+    def test_failed_telegram_send_does_not_mark_signal_as_sent(self):
+        with TemporaryDirectory() as folder:
+            config = self.make_config(folder)
+            stamp = datetime(2026, 11, 10, 10, 30, tzinfo=timezone.utc)
+            with patch("gold_signal_bot.fetch_closed_candles", return_value=[]), \
+                 patch("gold_signal_bot.detect_signal", return_value=self.make_signal(stamp)), \
+                 patch("gold_signal_bot.format_signal", return_value="test message"), \
+                 patch("gold_signal_bot.send_telegram", side_effect=requests.Timeout("offline")):
+                with self.assertRaises(requests.Timeout):
+                    run_once(config)
+            self.assertEqual(read_state(config.state_file), "")
