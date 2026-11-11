@@ -34,13 +34,13 @@ class IndicatorTests(unittest.TestCase):
         self.assertAlmostEqual(result[3], 3.0)
         self.assertAlmostEqual(result[4], 4.0)
 
-    def test_rsi_is_bounded(self):
+    def test_rsi_matches_known_reference_values_and_stays_bounded(self):
         result = rsi([1.0, 2.0, 1.0, 2.0], 2)
         self.assertAlmostEqual(result[2], 50.0)
         self.assertAlmostEqual(result[3], 75.0)
         self.assertTrue(all(0.0 <= value <= 100.0 for value in result if value is not None))
 
-    def test_atr_is_positive(self):
+    def test_atr_matches_known_reference_value(self):
         bars = [
             {"open": 10.0, "high": 12.0, "low": 9.0, "close": 10.0},
             {"open": 10.0, "high": 13.0, "low": 10.0, "close": 12.0},
@@ -200,10 +200,6 @@ class StateAndLockTests(unittest.TestCase):
                 self.assertTrue(parent_connection.poll(3), "Child process returned no lock result")
                 self.assertEqual(parent_connection.recv(), "blocked")
             parent_connection.close()
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class ConfigTests(unittest.TestCase):
@@ -661,3 +657,7 @@ class RunOnceTests(unittest.TestCase):
                 with self.assertRaises(requests.Timeout):
                     run_once(config)
             self.assertEqual(read_state(config.state_file), "")
+
+
+if __name__ == "__main__":
+    unittest.main()
