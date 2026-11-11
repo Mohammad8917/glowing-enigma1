@@ -1,6 +1,7 @@
 """Offline tests; no network calls, broker connections, or credentials required."""
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import multiprocessing
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import Mock, patch
@@ -12,6 +13,16 @@ from gold_signal_bot import (
     fetch_closed_candles, format_signal, parse_bar_time, process_lock, read_state,
     rsi, run_once, send_telegram, validate_candles, write_state,
 )
+
+
+def _child_lock_attempt(state_path, connection):
+    try:
+        with process_lock(Path(state_path)):
+            connection.send("acquired")
+    except RuntimeError:
+        connection.send("blocked")
+    finally:
+        connection.close()
 
 
 class IndicatorTests(unittest.TestCase):
@@ -162,10 +173,23 @@ class StateAndLockTests(unittest.TestCase):
     def test_process_lock_rejects_second_instance(self):
         with TemporaryDirectory() as folder:
             path = Path(folder) / "state.json"
+            context = multiprocessing.get_context("spawn")
+            parent_connection, child_connection = context.Pipe(duplex=False)
             with process_lock(path):
-                with self.assertRaisesRegex(RuntimeError, "already running"):
-                    with process_lock(path):
-                        pass
+                child = context.Process(
+                    target=_child_lock_attempt,
+                    args=(str(path), child_connection),
+                )
+                child.start()
+                child.join(timeout=10)
+                if child.is_alive():
+                    child.terminate()
+                    child.join(timeout=5)
+                    self.fail("Child process hung while checking the OS-level lock")
+                self.assertEqual(child.exitcode, 0)
+                self.assertTrue(parent_connection.poll(3), "Child process returned no lock result")
+                self.assertEqual(parent_connection.recv(), "blocked")
+            parent_connection.close()
 
 
 if __name__ == "__main__":
@@ -234,7 +258,8 @@ class ConfigTests(unittest.TestCase):
         env = {"GOLD_TWELVE_DATA_API_KEY": "k", "GOLD_TELEGRAM_BOT_TOKEN": "t",
                "GOLD_TELEGRAM_CHAT_ID": "c", "GOLD_TIMEFRAME": "1h",
                "GOLD_POLL_SECONDS": "120", "GOLD_RETRY_ATTEMPTS": "5",
-               "GOLD_RETRY_BASE_SECONDS": "0.25", "GOLD_MAX_GAP_MULTIPLIER": "2"}
+               "GOLD_RETRY_BASE_SECONDS": "0.25", "GOLD_MAX_GAP_MULTIPLIER": "2",
+               "GOLD_SIGNAL_STATE_FILE": str(Path.cwd() / "gold-test-state.json")}
         with patch.dict("os.environ", env, clear=True):
             config = Config.from_env()
         self.assertEqual(config.timeframe, "1h")
