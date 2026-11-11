@@ -119,7 +119,7 @@ def _is_expected_gold_pause(start: datetime, end: datetime) -> bool:
         if end.weekday() == 5 or (end.weekday() == 6 and (end.hour < 22 or (end.hour == 22 and end.minute == 0))):
             return True
     if start.weekday() == 5:
-        if end.weekday() == 5 or (end.weekday() == 6 and end.hour < 22):
+        if end.weekday() == 5 or (end.weekday() == 6 and (end.hour < 22 or (end.hour == 22 and end.minute == 0))):
             return True
     if start.weekday() == 6 and end.weekday() == 6 and (end.hour < 22 or (end.hour == 22 and end.minute == 0)):
         return True
@@ -133,7 +133,7 @@ def _is_expected_gold_pause(start: datetime, end: datetime) -> bool:
 
 def validate_candles(candles: list[dict[str, Any]], *, timeframe_seconds: int,
                      now: datetime | None = None, stale_multiplier: float = 3.0,
-                     gap_multiplier: float = 3.0) -> list[dict[str, Any]]:
+                     gap_multiplier: float = 1.5) -> list[dict[str, Any]]:
     """Validate sorted, unique, closed OHLC bars and reject stale/incomplete history."""
     if timeframe_seconds <= 0:
         raise ValueError("timeframe_seconds must be positive")
