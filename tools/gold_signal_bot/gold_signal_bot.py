@@ -116,12 +116,12 @@ def _is_expected_gold_pause(start: datetime, end: datetime) -> bool:
     exempts only obvious pause windows; tune data-age/gap limits for the provider.
     """
     if start.weekday() == 4 and (start.hour > 20 or (start.hour == 20 and start.minute >= 30)):
-        if end.weekday() == 5 or (end.weekday() == 6 and end.hour < 22):
+        if end.weekday() == 5 or (end.weekday() == 6 and (end.hour < 22 or (end.hour == 22 and end.minute == 0))):
             return True
     if start.weekday() == 5:
         if end.weekday() == 5 or (end.weekday() == 6 and end.hour < 22):
             return True
-    if start.weekday() == 6 and end.weekday() == 6 and end.hour < 22:
+    if start.weekday() == 6 and end.weekday() == 6 and (end.hour < 22 or (end.hour == 22 and end.minute == 0)):
         return True
     # Common one-hour daily liquidity/maintenance pause, with a 30-minute margin.
     if start.date() == end.date():
