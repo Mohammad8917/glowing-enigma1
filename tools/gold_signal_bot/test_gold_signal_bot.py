@@ -473,14 +473,60 @@ class SignalGenerationTests(unittest.TestCase):
         return bars
 
     def test_detects_buy_setup(self):
-        result = detect_signal(self.make_bars("BUY"))
+        bars = self.make_bars("BUY")
+        result = detect_signal(bars)
         self.assertIsNotNone(result)
+        self.assertEqual(
+            set(result),
+            {"symbol", "side", "entry", "stop_loss", "take_profit_1",
+             "take_profit_2", "atr", "rsi", "ema_fast", "ema_slow", "candle_time"},
+        )
+        self.assertEqual(result["symbol"], "XAU/USD")
         self.assertEqual(result["side"], "BUY")
+        self.assertEqual(result["entry"], bars[-1]["close"])
+        self.assertEqual(result["candle_time"], bars[-1]["time"])
+        self.assertAlmostEqual(result["ema_fast"], 2612.2354104434135, places=9)
+        self.assertAlmostEqual(result["ema_slow"], 2608.5662684642316, places=9)
+        self.assertAlmostEqual(result["rsi"], 65.54844513700353, places=9)
+        self.assertAlmostEqual(result["atr"], 2.373469387755018, places=9)
+        self.assertGreaterEqual(result["rsi"], 50.0)
+        self.assertLessEqual(result["rsi"], 70.0)
+        self.assertGreater(result["ema_fast"], result["ema_slow"])
+        self.assertLess(result["stop_loss"], result["entry"])
+        self.assertGreater(result["take_profit_1"], result["entry"])
+        self.assertGreater(result["take_profit_2"], result["take_profit_1"])
+        risk = result["entry"] - result["stop_loss"]
+        self.assertAlmostEqual(risk, result["atr"] * 1.5, places=9)
+        self.assertAlmostEqual(result["take_profit_1"] - result["entry"], risk, places=9)
+        self.assertAlmostEqual(result["take_profit_2"] - result["entry"], risk * 2.0, places=9)
 
     def test_detects_sell_setup(self):
-        result = detect_signal(self.make_bars("SELL"))
+        bars = self.make_bars("SELL")
+        result = detect_signal(bars)
         self.assertIsNotNone(result)
+        self.assertEqual(
+            set(result),
+            {"symbol", "side", "entry", "stop_loss", "take_profit_1",
+             "take_profit_2", "atr", "rsi", "ema_fast", "ema_slow", "candle_time"},
+        )
+        self.assertEqual(result["symbol"], "XAU/USD")
         self.assertEqual(result["side"], "SELL")
+        self.assertEqual(result["entry"], bars[-1]["close"])
+        self.assertEqual(result["candle_time"], bars[-1]["time"])
+        self.assertAlmostEqual(result["ema_fast"], 2687.959333345908, places=9)
+        self.assertAlmostEqual(result["ema_slow"], 2691.5234964534675, places=9)
+        self.assertAlmostEqual(result["rsi"], 41.05520236728954, places=9)
+        self.assertAlmostEqual(result["atr"], 2.3198364580734023, places=9)
+        self.assertGreaterEqual(result["rsi"], 30.0)
+        self.assertLessEqual(result["rsi"], 50.0)
+        self.assertLess(result["ema_fast"], result["ema_slow"])
+        self.assertGreater(result["stop_loss"], result["entry"])
+        self.assertLess(result["take_profit_1"], result["entry"])
+        self.assertLess(result["take_profit_2"], result["take_profit_1"])
+        risk = result["stop_loss"] - result["entry"]
+        self.assertAlmostEqual(risk, result["atr"] * 1.5, places=9)
+        self.assertAlmostEqual(result["entry"] - result["take_profit_1"], risk, places=9)
+        self.assertAlmostEqual(result["entry"] - result["take_profit_2"], risk * 2.0, places=9)
 
     def test_flat_market_does_not_create_signal(self):
         self.assertIsNone(detect_signal(self.make_bars("FLAT")))
