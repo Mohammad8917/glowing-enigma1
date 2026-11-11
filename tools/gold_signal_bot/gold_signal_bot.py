@@ -188,7 +188,7 @@ def _get_with_retry(client: requests.Session, url: str, *, params: dict[str, Any
     for attempt in range(attempts):
         try:
             response = client.get(url, params=params, timeout=timeout)
-            if response.status_code == 429 or response.status_code >= 500:
+            if response.status_code in (408, 425, 429) or response.status_code >= 500:
                 if attempt + 1 == attempts:
                     response.raise_for_status()
                 retry_after = response.headers.get("Retry-After", "")
