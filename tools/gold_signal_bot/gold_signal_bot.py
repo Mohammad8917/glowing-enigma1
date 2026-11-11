@@ -8,6 +8,7 @@ import math
 import os
 import signal
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -385,14 +386,20 @@ def write_state(path: Path, candle_time: datetime) -> None:
             pass
 
 
+_LOCAL_PROCESS_GUARD = threading.Lock()
+
+
 @contextmanager
 def process_lock(state_path: Path) -> Iterator[None]:
-    """Cross-platform advisory lock; prevents two bot instances racing the state file."""
+    """Cross-platform advisory lock plus in-process guard for duplicate bot instances."""
+    if not _LOCAL_PROCESS_GUARD.acquire(blocking=False):
+        raise RuntimeError("Another GOLD notifier instance is already running")
     lock_path = state_path.with_name(state_path.name + ".lock")
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    handle = lock_path.open("a+b")
+    handle = None
     acquired = False
     try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        handle = lock_path.open("a+b")
         if os.name == "nt":
             import msvcrt
             handle.seek(0)
@@ -403,31 +410,31 @@ def process_lock(state_path: Path) -> Iterator[None]:
             handle.seek(0)
             try:
                 msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-                acquired = True
             except OSError as exc:
                 raise RuntimeError("Another GOLD notifier instance is already running") from exc
         else:
             import fcntl
             try:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-                acquired = True
             except OSError as exc:
                 raise RuntimeError("Another GOLD notifier instance is already running") from exc
+        acquired = True
         yield
     finally:
-        if acquired:
-            try:
-                if os.name == "nt":
-                    import msvcrt
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    import fcntl
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-            except OSError:
-                pass
-        handle.close()
-
+        if handle is not None:
+            if acquired:
+                try:
+                    if os.name == "nt":
+                        import msvcrt
+                        handle.seek(0)
+                        msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                    else:
+                        import fcntl
+                        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            handle.close()
+        _LOCAL_PROCESS_GUARD.release()
 
 def run_once(config: Config, session: requests.Session | None = None) -> str:
     with process_lock(config.state_file):
