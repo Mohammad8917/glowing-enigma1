@@ -10,6 +10,8 @@ import requests
 
 from .config import Config, TIMEFRAMES
 
+TWELVE_DATA_URL = "https://api.twelvedata.com/time_series"
+
 def parse_bar_time(value: Any) -> datetime:
     raw = str(value or "").strip()
     if not raw:
