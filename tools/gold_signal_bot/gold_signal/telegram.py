@@ -5,6 +5,8 @@ import requests
 
 from .config import Config
 
+TELEGRAM_URL = "https://api.telegram.org/bot{token}/sendMessage"
+
 def format_signal(data: dict[str, Any], timeframe: str) -> str:
     stamp = data["candle_time"].strftime("%Y-%m-%d %H:%M UTC")
     return (
