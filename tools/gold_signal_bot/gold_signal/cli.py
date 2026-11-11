@@ -5,7 +5,6 @@ import argparse
 import logging
 import os
 import signal
-import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -17,6 +16,7 @@ from .service import run_once
 from .telegram import send_telegram
 
 ROOT = Path(__file__).resolve().parents[3]
+LOG = logging.getLogger("gold_signal_bot")
 
 def _redact(message: Any, config: Config) -> str:
     value = str(message)
