@@ -100,6 +100,20 @@ class CandleValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "at least 60"):
             validate_candles(bars, timeframe_seconds=self.interval, now=now)
 
+    def test_recognizes_daily_maintenance_window_only_when_bounded(self):
+        start = datetime(2026, 11, 10, 20, 45, tzinfo=timezone.utc)
+        end = datetime(2026, 11, 10, 22, 0, tzinfo=timezone.utc)
+        extended = datetime(2026, 11, 10, 23, 0, tzinfo=timezone.utc)
+        self.assertTrue(_is_expected_gold_pause(start, end))
+        self.assertFalse(_is_expected_gold_pause(start, extended))
+
+    def test_weekend_pause_ends_after_sunday_open(self):
+        friday = datetime(2026, 11, 13, 21, 0, tzinfo=timezone.utc)
+        sunday_before_open = datetime(2026, 11, 15, 21, 30, tzinfo=timezone.utc)
+        sunday_after_open = datetime(2026, 11, 15, 23, 0, tzinfo=timezone.utc)
+        self.assertTrue(_is_expected_gold_pause(friday, sunday_before_open))
+        self.assertFalse(_is_expected_gold_pause(friday, sunday_after_open))
+
 
 class StateAndLockTests(unittest.TestCase):
     def test_state_round_trip(self):
