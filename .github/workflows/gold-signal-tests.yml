@@ -5,10 +5,12 @@ on:
     branches:
       - feature/gold-data-reliability
       - feature/gold-architecture
+      - feature/gold-mutation-quality
   pull_request:
     branches:
       - feature/gold-xauusd-telegram-signals
       - feature/gold-data-reliability
+      - feature/gold-mutation-quality
     paths:
       - "tools/gold_signal_bot/**"
       - ".github/workflows/gold-signal-tests.yml"
