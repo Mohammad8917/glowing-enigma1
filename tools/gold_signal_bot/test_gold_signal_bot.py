@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from gold_signal_bot import (
-    atr, detect_signal, ema, parse_bar_time, process_lock, read_state,
+    _is_expected_gold_pause, atr, detect_signal, ema, parse_bar_time, process_lock, read_state,
     rsi, validate_candles, write_state,
 )
 
