@@ -115,15 +115,19 @@ def _is_expected_gold_pause(start: datetime, end: datetime) -> bool:
     exempts only obvious pause windows; tune data-age/gap limits for the provider.
     """
     if start.weekday() == 4 and start.hour >= 20:
-        return True
+        if end.weekday() == 5 or (end.weekday() == 6 and end.hour < 22):
+            return True
     if start.weekday() == 5:
-        return True
-    if start.weekday() == 6 and (end.weekday() == 6 and end.hour < 23):
+        if end.weekday() == 5 or (end.weekday() == 6 and end.hour < 22):
+            return True
+    if start.weekday() == 6 and end.weekday() == 6 and end.hour < 22:
         return True
     # Common one-hour daily liquidity/maintenance pause, with a 30-minute margin.
-    pause_start = start.replace(hour=20, minute=30, second=0, microsecond=0)
-    pause_end = start.replace(hour=22, minute=30, second=0, microsecond=0)
-    return start < pause_end and end > pause_start
+    if start.date() == end.date():
+        pause_start = start.replace(hour=20, minute=30, second=0, microsecond=0)
+        pause_end = start.replace(hour=22, minute=30, second=0, microsecond=0)
+        return start < pause_end and end > pause_start
+    return False
 
 
 def validate_candles(candles: list[dict[str, Any]], *, timeframe_seconds: int,
